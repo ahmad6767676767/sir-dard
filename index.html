@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Umar Samul - Ding Dong Ditch Runner</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 0;
+    background: #0f0f15;
+    color: #fff;
+    font-family: 'Montserrat', Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    overflow: hidden;
+  }
+  #game-wrapper {
+    position: relative;
+    box-shadow: 0 0 30px rgba(0, 255, 204, 0.3);
+    border-radius: 16px;
+    overflow: hidden;
+    border: 2px solid #00ffcc;
+  }
+  canvas {
+    background: #111;
+    display: block;
+  }
+  #overlay {
+    position: absolute;
+    top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(10, 10, 18, 0.88);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    padding: 24px;
+  }
+  h1 {
+    margin: 0 0 10px 0;
+    font-size: 28px;
+    color: #00ffcc;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    text-shadow: 0 0 10px rgba(0,255,204,0.5);
+  }
+  p {
+    margin: 5px 0 20px 0;
+    font-size: 15px;
+    color: #d0d0e0;
+    max-width: 320px;
+    line-height: 1.4;
+  }
+  .score-board {
+    font-size: 20px;
+    color: #ff007f;
+    font-weight: bold;
+    margin-bottom: 15px;
+  }
+  button {
+    padding: 14px 32px;
+    font-size: 18px;
+    font-weight: bold;
+    color: #0f0f15;
+    background: #00ffcc;
+    border: none;
+    border-radius: 30px;
+    cursor: pointer;
+    box-shadow: 0 0 15px rgba(0, 255, 204, 0.6);
+    transition: transform 0.15s, background 0.15s;
+  }
+  button:hover {
+    transform: scale(1.06);
+    background: #00cca3;
+  }
+  .controls-box {
+    margin-top: 20px;
+    padding: 10px 16px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 8px;
+    font-size: 13px;
+    color: #aaa;
+  }
+</style>
+</head>
+<body>
+
+<div id="game-wrapper">
+  <canvas id="gameCanvas" width="400" height="600"></canvas>
+  <div id="overlay">
+    <h1 id="title">DING DONG DITCH RUNNER</h1>
+    <p id="desc">Ring the doorbell and escape down the street while chasing down Umar Samul!</p>
+    <div id="score-display" class="score-board" style="display:none;"></div>
+    <button id="start-btn" onclick="initGame()">RING DOORBELL & RUN!</button>
+    <div class="controls-box">
+      <strong>Controls:</strong><br>
+      ⬅️ / ➡️ or A / D : Change Lanes<br>
+      ⬆️ / Space : Jump
+    </div>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const overlay = document.getElementById('overlay');
+const titleText = document.getElementById('title');
+const descText = document.getElementById('desc');
+const startBtn = document.getElementById('start-btn');
+const scoreDisplay = document.getElementById('score-display');
+
+// Audio Context & Voice Setup
+let audioCtx = null;
+let musicTimer = null;
+let screamTimer = null;
+
+// Game State
+let gameState = 'START'; // START, CUTSCENE, PLAYING, GAMEOVER
+let score = 0;
+let distance = 0;
+let speed = 0.012;
+let animFrameId = null;
+
+// Perspective setup
+const horizonY = 180;
+const laneXsBottom = [70, 200, 330];
+const laneXsTop = [170, 200, 230];
+
+// Player State
+const player = {
+  lane: 1, // 0: Left, 1: Center, 2: Right
+  currentX: 200,
+  yOffset: 0,
+  isJumping: false,
+  jumpVel: 0,
+  gravity: 0.8,
+  animTick: 0
+};
+
+// Target Character ahead (Chased)
+const targetChar = {
+  lane: 1,
+  z: 0.45,
+  animTick: 0
+};
+
+// Obstacles & Coins
+let obstacles = [];
+let coins = [];
+
+function playScreamSound() {
+  // Web Speech API for voice screaming
+  if ('speechSynthesis' in window) {
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance("UMAR SAMUUUUUUUUUUUL!");
+    utterance.pitch = 1.7;
+    utterance.rate = 1.35;
+    utterance.volume = 1.0;
+    window.speechSynthesis.speak(utterance);
+  }
+
+  // Synthesized audio scream layer
+  if (audioCtx && audioCtx.state === 'running') {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(500, audioCtx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(1200, audioCtx.currentTime + 0.5);
+    gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.6);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.6);
+  }
+}
+
+function startAudioEngine() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume();
+  }
+
+  // Background Arcade Music Synthesizer Loop
+  clearInterval(musicTimer);
+  let noteIndex = 0;
+  const bassNotes = [110, 110, 130, 110, 146, 130, 110, 98];
+  musicTimer = setInterval(() => {
+    if (gameState !== 'PLAYING') return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'square';
+    osc.frequency.value = bassNotes[noteIndex % bassNotes.length];
+    gain.gain.setValueAtTime(0.05, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.14);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + 0.15);
+    noteIndex++;
+  }, 160);
+
+  // Screaming interval every 5 seconds
+  clearInterval(screamTimer);
+  screamTimer = setInterval(() => {
+    if (gameState === 'PLAYING') {
+      playScreamSound();
+    }
+  }, 5000);
+}
+
+function initGame() {
+  startAudioEngine();
+  overlay.style.display = 'none';
+  
+  // Cutscene sequence: Ring door bell -> Start Chase
+  gameState = 'CUTSCENE';
+  let cutsceneStep = 0;
+  playScreamSound();
+
+  const cutsceneInt = setInterval(() => {
+    cutsceneStep++;
+    if (cutsceneStep >= 3) {
+      clearInterval(cutsceneInt);
+      resetGameVars();
+      gameState = 'PLAYING';
+      gameLoop();
+    }
+  }, 600);
+}
+
+function resetGameVars() {
+  score = 0;
+  distance = 0;
+  speed = 0.012;
+  player.lane = 1;
+  player.currentX = laneXsBottom[1];
+  player.yOffset = 0;
+  player.isJumping = false;
+  obstacles = [];
+  coins = [];
+}
+
+// Input Handling
+window.addEventListener('keydown', (e) => {
+  if (gameState !== 'PLAYING') return;
+  if ((e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') && player.lane > 0) {
+    player.lane--;
+  }
+  if ((e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') && player.lane < 2) {
+    player.lane++;
+  }
+  if ((e.key === 'ArrowUp' || e.key === ' ' || e.key === 'w' || e.key === 'W') && !player.isJumping) {
+    player.isJumping = true;
+    player.jumpVel = -14;
+  }
+});
+
+// Helper: Convert Z position (1.0 far, 0.0 near) to Screen Coordinates
+function project(lane, z) {
+  const scale = 1 - z;
+  const y = horizonY + (canvas.height - horizonY) * scale;
+  const laneXTop = laneXsTop[lane];
+  const laneXBot = laneXsBottom[lane];
+  const x = laneXTop + (laneXBot - laneXTop) * scale;
+  return { x, y, scale };
+}
+
+function spawnSpawns() {
+  if (Math.random() < 0.035) {
+    const lane = Math.floor(Math.random() * 3);
+    const type = Math.random() > 0.5 ? 'trash' : 'barrier';
+    obstacles.push({ lane, z: 1.0, type });
+  }
+  if (Math.random() < 0.05) {
+    const lane = Math.floor(Math.random() * 3);
+    coins.push({ lane, z: 1.0 });
+  }
+}
+
+function update() {
+  distance += speed * 50;
+  score = Math.floor(distance);
+  speed += 0.000002; // Gradually speed up
+
+  // Player Jump Physics
+  if (player.isJumping) {
+    player.yOffset += player.jumpVel;
+    player.jumpVel += player.gravity;
+    if (player.yOffset >= 0) {
+      player.yOffset = 0;
+      player.isJumping = false;
+    }
+  }
+
+  // Smooth player movement between lanes
+  const targetX = laneXsBottom[player.lane];
+  player.currentX += (targetX - player.currentX) * 0.25;
+  player.animTick += 0.2;
+
+  // Target movement
+  targetChar.animTick += 0.2;
+  if (Math.random() < 0.02) {
+    targetChar.lane = Math.floor(Math.random() * 3);
+  }
+
+  spawnSpawns();
+
+  // Update Obstacles
+  for (let i = obstacles.length - 1; i >= 0; i--) {
+    const obs = obstacles[i];
+    obs.z -= speed;
+
+    // Collision Detection near player (z close to 0)
+    if (obs.z < 0.12 && obs.z > 0.01 && obs.lane === player.lane) {
+      if (player.yOffset > -25) { // Hit obstacle
+        triggerGameOver();
+        return;
+      }
+    }
+
+    if (obs.z <= 0) obstacles.splice(i, 1);
+  }
+
+  // Update Coins
+  for (let i = coins.length - 1; i >= 0; i--) {
+    const coin = coins[i];
+    coin.z -= speed;
+
+    if (coin.z < 0.12 && coin.z > 0.01 && coin.lane === player.lane) {
+      distance += 5; // Coin bonus
+      coins.splice(i, 1);
+    } else if (coin.z <= 0) {
+      coins.splice(i, 1);
+    }
+  }
+}
+
+function drawBackground() {
+  // Sky
+  const skyGradient = ctx.createLinearGradient(0, 0, 0, horizonY);
+  skyGradient.addColorStop(0, '#0f051d');
+  skyGradient.addColorStop(1, '#2c124d');
+  ctx.fillStyle = skyGradient;
+  ctx.fillRect(0, 0, canvas.width, horizonY);
+
+  // Distant City / Houses
+  ctx.fillStyle = '#180a29';
+  for (let i = 0; i < canvas.width; i += 40) {
+    const h = 30 + (i % 30);
+    ctx.fillRect(i, horizonY - h, 35, h);
+  }
+
+  // Ground / Road
+  ctx.fillStyle = '#22222b';
+  ctx.beginPath();
+  ctx.moveTo(laneXsTop[0] - 40, horizonY);
+  ctx.lineTo(laneXsTop[2] + 40, horizonY);
+  ctx.lineTo(laneXsBottom[2] + 90, canvas.height);
+  ctx.lineTo(laneXsBottom[0] - 90, canvas.height);
+  ctx.fill();
+
+  // Draw Lane Markings
+  ctx.strokeStyle = '#444455';
+  ctx.lineWidth = 2;
+  for (let l = 0; l <= 3; l++) {
+    const topX = l === 0 ? laneXsTop[0] - 10 : (l === 3 ? laneXsTop[2] + 10 : laneXsTop[l-1] + (laneXsTop[1]-laneXsTop[0])/2);
+    const botX = l === 0 ? laneXsBottom[0] - 30 : (l === 3 ? laneXsBottom[2] + 30 : laneXsBottom[l-1] + (laneXsBottom[1]-laneXsBottom[0])/2);
+    
+    ctx.beginPath();
+    ctx.moveTo(topX, horizonY);
+    ctx.lineTo(botX, canvas.height);
+    ctx.stroke();
+  }
+
+  // Scrolling Road Lines
+  ctx.strokeStyle = '#ffcc00';
+  ctx.lineWidth = 3;
+  const offset = (distance % 20) / 20;
+  for (let z = 0; z < 1; z += 0.1) {
+    const effZ = (z + offset) % 1;
+    const p1 = project(1, effZ);
+    const p2 = project(1, Math.min(effZ + 0.04, 1));
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.stroke();
+  }
+}
+
+function drawObstaclesAndCoins() {
+  // Sort elements by Z so furthest renders first
+  const renderList = [];
+  obstacles.forEach(o => renderList.push({ type: 'obs', data: o, z: o.z }));
+  coins.forEach(c => renderList.push({ type: 'coin', data: c, z: c.z }));
+  renderList.push({ type: 'target', data: targetChar, z: targetChar.z });
+
+  renderList.sort((a, b) => b.z - a.z);
+
+  renderList.forEach(item => {
+    if (item.type === 'obs') {
+      const { x, y, scale } = project(item.data.lane, item.data.z);
+      const w = 40 * scale;
+      const h = 40 * scale;
+      if (item.data.type === 'trash') {
+        ctx.fillStyle = '#778899';
+        ctx.fillRect(x - w/2, y - h, w, h);
+        ctx.fillStyle = '#556677';
+        ctx.fillRect(x - w/2 - 2, y - h, w + 4, 6 * scale);
+      } else {
+        ctx.fillStyle = '#ff4444';
+        ctx.fillRect(x - w/2, y - h*0.8, w, h*0.8);
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(x - w/2 + 2, y - h*0.6, w - 4, 6 * scale);
+      }
+    } else if (item.type === 'coin') {
+      const { x, y, scale } = project(item.data.lane, item.data.z);
+      const r = 12 * scale;
+      ctx.fillStyle = '#ffd700';
+      ctx.beginPath();
+      ctx.arc(x, y - r - 5, r, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (item.type === 'target') {
+      // Draw Chased Character (Umar Samul - Larger figure ahead)
+      const { x, y, scale } = project(item.data.lane, item.data.z);
+      const h = 65 * scale;
+      const w = 45 * scale;
+      const bounce = Math.sin(item.data.animTick) * 4 * scale;
+
+      // Body (Rotund / Big)
+      ctx.fillStyle = '#e67e22'; // Orange Hoodie
+      ctx.beginPath();
+      ctx.ellipse(x, y - h*0.4 + bounce, w*0.5, h*0.35, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Head
+      ctx.fillStyle = '#f1c40f';
+      ctx.beginPath();
+      ctx.arc(x, y - h*0.8 + bounce, 14 * scale, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Label above head
+      ctx.fillStyle = '#00ffcc';
+      ctx.font = `bold ${Math.max(10, Math.floor(12 * scale))}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.fillText("UMAR SAMUL", x, y - h - 5);
+    }
+  });
+}
+
+function drawPlayer() {
+  const x = player.currentX;
+  const y = canvas.height - 20 + player.yOffset;
+  const bounce = player.isJumping ? 0 : Math.sin(player.animTick) * 5;
+
+  // Slim Runner Body
+  ctx.fillStyle = '#00ffcc';
+  
+  // Head
+  ctx.beginPath();
+  ctx.arc(x, y - 60 + bounce, 9, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Torso (Slim)
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = '#00ffcc';
+  ctx.beginPath();
+  ctx.moveTo(x, y - 51 + bounce);
+  ctx.lineTo(x, y - 22 + bounce);
+  ctx.stroke();
+
+  // Running Legs
+  const legOffset = Math.sin(player.animTick) * 12;
+  ctx.beginPath();
+  ctx.moveTo(x, y - 22 + bounce);
+  ctx.lineTo(x - legOffset, y);
+  ctx.moveTo(x, y - 22 + bounce);
+  ctx.lineTo(x + legOffset, y);
+  ctx.stroke();
+
+  // Arms
+  ctx.beginPath();
+  ctx.moveTo(x, y - 45 + bounce);
+  ctx.lineTo(x + legOffset, y - 30 + bounce);
+  ctx.moveTo(x, y - 45 + bounce);
+  ctx.lineTo(x - legOffset, y - 30 + bounce);
+  ctx.stroke();
+}
+
+function drawHUD() {
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 18px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText(`SCORE: ${score}`, 20, 35);
+}
+
+function gameLoop() {
+  if (gameState !== 'PLAYING') return;
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  update();
+  drawBackground();
+  drawObstaclesAndCoins();
+  drawPlayer();
+  drawHUD();
+
+  animFrameId = requestAnimationFrame(gameLoop);
+}
+
+function triggerGameOver() {
+  gameState = 'GAMEOVER';
+  cancelAnimationFrame(animFrameId);
+  
+  titleText.innerText = "GAME OVER!";
+  descText.innerText = "You tripped while chasing Umar Samul!";
+  scoreDisplay.style.display = 'block';
+  scoreDisplay.innerText = `FINAL SCORE: ${score}`;
+  startBtn.innerText = "TRY AGAIN";
+  overlay.style.display = 'flex';
+}
+
+// Draw initial start screen canvas background
+drawBackground();
+</script>
+</body>
+</html>
